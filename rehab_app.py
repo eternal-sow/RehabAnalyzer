@@ -3855,6 +3855,7 @@ class ExerciseViewPage(QWidget):
         self.current_ex_name = None
         self.sessions = []
         self.current_smoothing_intensity = "medium"  # по умолчанию Среднее
+        self._pending_ai_timer = None  # для отмены устаревших таймеров
 
         # Подключаем обработчик смены вкладок — выбор сеанса показывается только на нужных вкладках
         self.center_tabs.currentChanged.connect(self._on_tab_changed)
@@ -3867,6 +3868,8 @@ class ExerciseViewPage(QWidget):
         folder_name = os.path.basename(exercise_path)
         self.current_ex_name = folder_name.split('_', 1)[0] if '_' in folder_name else folder_name
 
+        if self._pending_ai_timer is not None:
+            self._pending_ai_timer.stop()
         self.name_label.setText(self.current_ex_name)
 
         patient_dir = os.path.join(PATIENTS_DIR, patient_name)
@@ -3996,15 +3999,16 @@ class ExerciseViewPage(QWidget):
         # === Вывод анализа ансамбля ИИ-агентов под названием упражнения ===
         # Запускаем отложенно, чтобы не блокировать открытие интерфейса упражнения
         from PyQt6.QtCore import QTimer as _QTimer
-        def _safe_ai_analysis():
+        if self._pending_ai_timer is not None:
             try:
-                if hasattr(self, '_run_and_display_ai_analysis'):
-                    self._run_and_display_ai_analysis(patient_name)
-            except Exception as _e:
-                print(f"[AI] safe call error: {_e}")
-                if hasattr(self, 'ai_analysis_text'):
-                    self.ai_analysis_text.setPlainText("Анализ ИИ-ансамбля: не удалось выполнить.\n\nПовторите открытие упражнения.")
-        _QTimer.singleShot(280, _safe_ai_analysis)
+                self._pending_ai_timer.stop()
+            except Exception:
+                pass
+        ai_timer = _QTimer()
+        ai_timer.setSingleShot(True)
+        ai_timer.timeout.connect(lambda: self._run_and_display_ai_analysis(patient_name))
+        ai_timer.start(280)
+        self._pending_ai_timer = ai_timer
 
     def load_sessions_list(self, patient_name, group_by_date=False, hierarchical=False, preserve_selection=True):
         """
@@ -4523,10 +4527,7 @@ class ExerciseViewPage(QWidget):
         if not self.current_patient or not self.current_ex_name:
             return []
         # Форсируем обновление списка сеансов (точно тех, что видны в правой панели)
-        try:
-            self.load_sessions_list(self.current_patient, group_by_date=True)
-        except Exception:
-            pass
+        self.load_sessions_list(self.current_patient, group_by_date=True)
         patient_dir = os.path.join(PATIENTS_DIR, self.current_patient)
         anthro = load_patient_anthropometrics(self.current_patient)
         sessions_data = []
@@ -4850,11 +4851,12 @@ class ExerciseViewPage(QWidget):
             # Форсируем свежий список сеансов (как делают все load_*)
             try:
                 self.load_sessions_list(self.current_patient, group_by_date=True)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[AI] load_sessions_list error: {_e}")
 
             collected = self._collect_sessions_data() or []
             n = len(collected)
+            print(f"[AI] _run_and_display_ai_analysis: patient={self.current_patient}, ex={self.current_ex_name}, sessions={n}")
             if n < 2:
                 if hasattr(self, 'ai_analysis_text'):
                     self.ai_analysis_text.setPlainText(
